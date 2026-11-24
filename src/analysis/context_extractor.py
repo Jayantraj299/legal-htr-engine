@@ -43,7 +43,9 @@ LEGAL_LEXICON = {
     "property_and_contract": [
         "indenture", "deed", "conveyance", "grantor", "grantee", "tenement",
         "hereditaments", "covenant", "consideration", "encumbrance", "mortgage",
-        "lease", "power of attorney", "authorise", "empower", "appoint", "constitute", "registration", "registered", "sub-registrar", "director", "bequeath", "executor", "testament", "estate", "proprietor", "title"
+        "lease", "power of attorney", "authorise", "empower", "appoint", "constitute",
+        "registration", "registered", "sub-registrar", "director", "bequeath",
+        "executor", "testament", "estate", "proprietor", "title"
     ],
     "formal_legal_connectors": [
         "whereas", "witnesseth", "heretofore", "hereinafter", "aforesaid", "pursuant",
@@ -58,7 +60,7 @@ def extract_structured_entities(lines: List[Dict[str, Any]]) -> Dict[str, Any]:
     date_pattern = re.compile(
         r"\b(?:\d{1,2}(?:st|nd|rd|th)?\s+(?:day\s+of\s+)?(?:January|February|March|April|May|June|July|August|September|October|November|December)\s*,?\s*\d{2,4}"
         r"|(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s*\d{4}"
-        r"|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}"
+        r"|\d{1,2}[-/.,]\d{1,2}[-/.,]\d{2,4}"
         r"|(?:17|18|19|20)\d{2})\b",
         re.IGNORECASE,
     )
@@ -67,7 +69,10 @@ def extract_structured_entities(lines: List[Dict[str, Any]]) -> Dict[str, Any]:
         re.IGNORECASE,
     )
     party_pattern = re.compile(
-        r"\b(?:between|against|by|unto|signed\s+by|before)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b"
+        r"(?:\b(?:between|against|by|unto|signed\s+by|before)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b"
+        r"|\b((?:SRI|SHRI|SMT|MR|MRS)\.?\s+[A-Z]{2,}(?:\s+[A-Z]{2,}){1,3})\b"
+        r"|\b((?!REGISTERED\b|LIMITED\b|PRIVATE\b)[A-Z]{2,}(?:\s+(?!REGISTERED\b)[A-Z]{2,}){0,2}\s+(?:PRIVATE|PVT\.?)\s+(?:LIMITED|LTD\.?))"
+        r"|\b((?:SUB-?\s*)?REGISTRAR\s+(?:OF\s+)?[A-Z]{3,}|DEPUTY\s+COMMISSIONER)\b)"
     )
 
     dates = []
@@ -88,7 +93,9 @@ def extract_structured_entities(lines: List[Dict[str, Any]]) -> Dict[str, Any]:
             citations.append({"reference": match.strip(), "line_id": line_id})
 
         for match in party_pattern.findall(text):
-            parties.append({"entity": match.strip(), "line_id": line_id})
+            val = next((m.strip() for m in match if m and m.strip()), "") if isinstance(match, tuple) else match.strip()
+            if val:
+                parties.append({"entity": val, "line_id": line_id})
 
         lower_text = text.lower()
         for category, terms in LEGAL_LEXICON.items():
@@ -135,7 +142,6 @@ class LegalContextExtractor:
         self.model.to(self.device)
         self.model.eval()
 
-        # Pre-compute archetype prototype embeddings
         self.archetype_labels = list(LEGAL_ARCHETYPES.keys())
         archetype_texts = [LEGAL_ARCHETYPES[k] for k in self.archetype_labels]
         self.archetype_embeddings = self.encode(archetype_texts)
@@ -185,14 +191,11 @@ class LegalContextExtractor:
                 "vector_index_payload": {"model": "nlpaueb/legal-bert-base-uncased", "dimensions": 768},
             }
 
-        # Encode full document and individual lines
         doc_vec = self.encode([full_text])[0]
         line_texts = [l["text"].strip() for l in non_empty_lines]
         line_vecs = self.encode(line_texts)
 
-        # Classify document archetype via cosine similarity
         raw_sims = np.dot(self.archetype_embeddings, doc_vec)
-        # Temperature-scaled softmax for interpretable confidence scores
         exp_scores = np.exp((raw_sims - np.max(raw_sims)) * 12.0)
         probs = exp_scores / np.sum(exp_scores)
 
@@ -202,7 +205,6 @@ class LegalContextExtractor:
             reverse=True,
         )
 
-        # Score each line's semantic salience relative to the full document
         line_salience = np.dot(line_vecs, doc_vec).tolist()
         scored_lines = []
         for item, score in zip(non_empty_lines, line_salience):
@@ -214,7 +216,6 @@ class LegalContextExtractor:
 
         top_operative_lines = sorted(scored_lines, key=lambda x: x["salience_score"], reverse=True)[:5]
 
-        # Estimate clause/sentence boundaries
         clause_count = max(1, len(re.split(r"[.;:]\s+", full_text)))
         word_count = len(full_text.split())
 
