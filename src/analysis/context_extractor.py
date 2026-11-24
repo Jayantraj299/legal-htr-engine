@@ -6,6 +6,11 @@ from transformers import AutoTokenizer, AutoModel
 
 
 LEGAL_ARCHETYPES = {
+    "Power of Attorney / Authorization Deed": (
+        "Special power of attorney to all whom these presents shall come, we hereby authorise, "
+        "empower, appoint and constitute our manager to execute the lease on our behalf and present "
+        "the same for registration at the office of the Sub-Registrar."
+    ),
     "Property Deed / Indenture": (
         "This indenture witnesseth that the grantor hereby conveys, grants, bargains, "
         "and sells the parcel of land, tenement, and hereditaments unto the grantee forever."
@@ -38,7 +43,7 @@ LEGAL_LEXICON = {
     "property_and_contract": [
         "indenture", "deed", "conveyance", "grantor", "grantee", "tenement",
         "hereditaments", "covenant", "consideration", "encumbrance", "mortgage",
-        "lease", "bequeath", "executor", "testament", "estate", "proprietor", "title"
+        "lease", "power of attorney", "authorise", "empower", "appoint", "constitute", "registration", "registered", "sub-registrar", "director", "bequeath", "executor", "testament", "estate", "proprietor", "title"
     ],
     "formal_legal_connectors": [
         "whereas", "witnesseth", "heretofore", "hereinafter", "aforesaid", "pursuant",
@@ -53,7 +58,7 @@ def extract_structured_entities(lines: List[Dict[str, Any]]) -> Dict[str, Any]:
     date_pattern = re.compile(
         r"\b(?:\d{1,2}(?:st|nd|rd|th)?\s+(?:day\s+of\s+)?(?:January|February|March|April|May|June|July|August|September|October|November|December)\s*,?\s*\d{2,4}"
         r"|(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s*\d{4}"
-        r"|\d{1,2}[-/]\d{1,2}[-/]\d{2,4}"
+        r"|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}"
         r"|(?:17|18|19|20)\d{2})\b",
         re.IGNORECASE,
     )

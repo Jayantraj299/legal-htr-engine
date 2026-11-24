@@ -3,10 +3,12 @@ SHELL := /bin/bash
 PYTHON := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
 
 # Configurable runtime parameters
-DOC ?= data/raw/real_samples/aviation.jpg
-OUT ?= data/processed/aviation_readable
-OUT_BASE := $(basename $(OUT))
-WORK_DIR ?= data/processed/run_doc
+DOC ?= data/raw/real_samples/special.jpg
+DOC_STEM = $(notdir $(basename $(DOC)))
+WORK_DIR ?= data/processed/run_$(DOC_STEM)
+OUT ?= $(WORK_DIR)/$(DOC_STEM)
+OUT_BASE = $(basename $(OUT))
+
 MODEL ?= microsoft/trocr-base-handwritten
 BATCH_SIZE ?= 4
 WINDOW_SIZE ?= 25
@@ -20,7 +22,7 @@ TEXT_OUT ?= data/processed/text_contexts
 .DEFAULT_GOAL := help
 
 .PHONY: help setup ingest ingest-iam ingest-bentham \
-	    run run-classic run-printed run-embed process-text \
+	    run run-deed run-classic run-printed run-embed process-text \
 	    view open binarize segment infer eval eval-quick dvc-track clean
 
 help:
@@ -29,14 +31,14 @@ help:
 	@echo "=================================================================="
 	@echo "  make setup           Create .venv and install CUDA PyTorch + deps"
 	@echo "  make ingest          Ingest IAM and Bentham benchmark splits"
-	@echo "  make run             Run archival cleaner + HTR + Legal-BERT (.md/.html/.json)"
-	@echo "                       (Override: make run DOC=path/to/scan.jpg OUT=data/processed/doc)"
+	@echo "  make run             Run archival HTR + Legal-BERT (all files in WORK_DIR)"
+	@echo "  make run-deed        Run color-aware stamp-deed cleaner + TrOCR-printed"
+	@echo "                       (Override: make run-deed DOC=path/to/deed.jpg)"
 	@echo "  make run-classic     Run classic Sauvola + HPP seam-carving pipeline"
 	@echo "  make run-printed     Run pipeline using trocr-base-printed model"
 	@echo "  make run-embed       Run pipeline and export full 768-d pgvector embedding"
 	@echo "  make process-text    Run Legal-BERT context analysis on .txt/.md/.pdf files"
-	@echo "                       (Override: make process-text TEXT_IN=path/to/file.pdf)"
-	@echo "  make view            Print the generated readable Markdown document"
+	@echo "  make view            Print the Markdown document from WORK_DIR"
 	@echo "  make open            Open the styled HTML document in Brave Browser"
 	@echo "  make eval            Evaluate CER & WER across full test splits"
 	@echo "  make eval-quick      Quick 5-sample CER & WER smoke test"
@@ -68,6 +70,15 @@ run:
 	    --output "$(OUT_BASE)" \
 	    --work-dir "$(WORK_DIR)" \
 	    --model "$(MODEL)" \
+	    --batch-size $(BATCH_SIZE)
+
+run-deed:
+	$(PYTHON) src/pipeline.py \
+	    --input "$(DOC)" \
+	    --output "$(OUT_BASE)" \
+	    --work-dir "$(WORK_DIR)" \
+	    --model "microsoft/trocr-base-printed" \
+	    --stamp-deed \
 	    --batch-size $(BATCH_SIZE)
 
 run-classic:

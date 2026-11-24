@@ -20,7 +20,9 @@ from src.preprocessing.archival_clean import (
     suppress_watermark_and_enhance,
     deskew_clamped,
     segment_lines_archival,
+    split_wide_line,
 )
+from src.preprocessing.stamp_deed_clean import clean_stamp_paper_deed, segment_typed_lines, split_typed_line_on_spaces
 from src.engine.model import TrOCREngine
 from src.analysis.context_extractor import LegalContextExtractor
 from src.analysis.formatter import write_readable_markdown, write_readable_html
@@ -87,27 +89,37 @@ class LegalHTRPipeline:
         work_dir: Path,
         deskew: bool = True,
         classic_sauvola: bool = False,
+        stamp_deed: bool = False,
         window_size: int = 25,
         k: float = 0.2,
         batch_size: int = 4,
         include_full_embedding: bool = False,
     ) -> Dict[str, Any]:
         start_total = time.perf_counter()
-        raw_img = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
-        if raw_img is None:
+        raw_bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        if raw_bgr is None:
             raise FileNotFoundError(f"Could not load image: {image_path}")
+        raw_gray = cv2.cvtColor(raw_bgr, cv2.COLOR_BGR2GRAY)
 
         work_dir.mkdir(parents=True, exist_ok=True)
         lines_dir = work_dir / "lines"
         lines_dir.mkdir(parents=True, exist_ok=True)
-
-        # Clean stale line crops from earlier runs
         for old in lines_dir.glob("line_*.png"):
             old.unlink()
 
         t0 = time.perf_counter()
-        if classic_sauvola:
-            binary_img = sauvola_binarize(raw_img, window_size=window_size, k=k)
+        if stamp_deed:
+            enhanced_gray, char_mask = clean_stamp_paper_deed(raw_bgr)
+            cv2.imwrite(str(work_dir / "enhanced_clean.png"), enhanced_gray)
+            cv2.imwrite(str(work_dir / "ink_mask.png"), char_mask)
+            preprocess_ms = (time.perf_counter() - t0) * 1000.0
+
+            t1 = time.perf_counter()
+            segmented = segment_typed_lines(enhanced_gray, char_mask)
+            segment_ms = (time.perf_counter() - t1) * 1000.0
+            max_aspect = 6.5
+        elif classic_sauvola:
+            binary_img = sauvola_binarize(raw_gray, window_size=window_size, k=k)
             cv2.imwrite(str(work_dir / "binarized.png"), binary_img)
             preprocess_ms = (time.perf_counter() - t0) * 1000.0
 
@@ -115,8 +127,9 @@ class LegalHTRPipeline:
             raw_crops = extract_line_boundaries_with_seams(binary_img)
             segmented = [(None, crop) for crop in raw_crops]
             segment_ms = (time.perf_counter() - t1) * 1000.0
+            max_aspect = 7.5
         else:
-            enhanced_gray, ink_mask = suppress_watermark_and_enhance(raw_img)
+            enhanced_gray, ink_mask = suppress_watermark_and_enhance(raw_gray)
             if deskew:
                 enhanced_gray, ink_mask = deskew_clamped(enhanced_gray, ink_mask)
             cv2.imwrite(str(work_dir / "enhanced_clean.png"), enhanced_gray)
@@ -126,28 +139,42 @@ class LegalHTRPipeline:
             t1 = time.perf_counter()
             segmented = segment_lines_archival(enhanced_gray, ink_mask)
             segment_ms = (time.perf_counter() - t1) * 1000.0
+            max_aspect = 7.5
 
-        pil_crops = []
+        pil_chunks = []
+        chunk_line_map = []
         crop_records = []
         for idx, (bbox, crop) in enumerate(segmented):
             crop_name = f"line_{idx:03d}.png"
             crop_path = lines_dir / crop_name
             cv2.imwrite(str(crop_path), crop)
-            pil_crops.append(Image.fromarray(crop).convert("RGB"))
             rec: Dict[str, Any] = {"line_id": idx, "filename": crop_name, "path": str(crop_path)}
             if bbox is not None:
                 rec["bbox"] = list(bbox)
             crop_records.append(rec)
 
+            splitter = split_typed_line_on_spaces if stamp_deed else split_wide_line
+            for sub in splitter(crop, max_aspect=9.0 if stamp_deed else max_aspect):
+                pil_chunks.append(Image.fromarray(sub).convert("RGB"))
+                chunk_line_map.append(idx)
+
         t2 = time.perf_counter()
-        transcriptions = []
-        for i in range(0, len(pil_crops), batch_size):
-            batch = pil_crops[i : i + batch_size]
-            transcriptions.extend(self.engine.predict_batch(batch))
+        chunk_texts = []
+        for i in range(0, len(pil_chunks), batch_size):
+            batch = pil_chunks[i : i + batch_size]
+            chunk_texts.extend(self.engine.predict_batch(batch))
         ocr_ms = (time.perf_counter() - t2) * 1000.0
 
-        for r, text in zip(crop_records, transcriptions):
-            r["text"] = text
+        grouped = {i: [] for i in range(len(crop_records))}
+        for line_idx, txt in zip(chunk_line_map, chunk_texts):
+            if txt and txt.strip():
+                grouped[line_idx].append(txt.strip())
+
+        transcriptions = []
+        for r in crop_records:
+            joined = " ".join(grouped[r["line_id"]])
+            r["text"] = joined
+            transcriptions.append(joined)
 
         context_ms = 0.0
         document_context = None
@@ -187,6 +214,7 @@ def parse_args():
     parser.add_argument("--work-dir", default=None, help="Directory to save intermediate cleaned images and line crops")
     parser.add_argument("--model", default="microsoft/trocr-base-handwritten", help="Hugging Face TrOCR model ID")
     parser.add_argument("--batch-size", type=int, default=4, help="Inference batch size")
+    parser.add_argument("--stamp-deed", action="store_true", help="Color-aware red-ink removal & stamp-banner stripping for typed Indian deeds")
     parser.add_argument("--classic-sauvola", action="store_true", help="Use classic Sauvola + HPP instead of archival watermark cleaner")
     parser.add_argument("--window-size", type=int, default=25, help="Sauvola window size (classic mode)")
     parser.add_argument("-k", type=float, default=0.2, help="Sauvola threshold factor (classic mode)")
@@ -204,7 +232,7 @@ def main():
         print(f"Error: input file {input_path} does not exist.")
         sys.exit(1)
 
-    work_dir = Path(args.work_dir) if args.work_dir else Path(tempfile.mkdtemp(prefix="htr_run_"))
+    work_dir = Path(args.work_dir) if args.work_dir else Path("data/processed") / f"run_{input_path.stem}"
 
     pipeline = LegalHTRPipeline(
         model_name=args.model,
@@ -216,13 +244,18 @@ def main():
         work_dir=work_dir,
         deskew=not args.no_deskew,
         classic_sauvola=args.classic_sauvola,
+        stamp_deed=args.stamp_deed,
         window_size=args.window_size,
         k=args.k,
         batch_size=args.batch_size,
         include_full_embedding=args.full_embedding,
     )
 
-    out_base = Path(args.output) if args.output else Path("data/processed") / f"{input_path.stem}_document"
+    if args.output:
+        raw_out = Path(args.output)
+        out_base = (work_dir / raw_out) if len(raw_out.parts) == 1 else raw_out
+    else:
+        out_base = work_dir / input_path.stem
     out_base = out_base.with_suffix("")
     out_base.parent.mkdir(parents=True, exist_ok=True)
 

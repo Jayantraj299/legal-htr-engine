@@ -171,3 +171,37 @@ def segment_lines_archival(
         line_results.append(((x1, y1, x2 - x1, y2 - y1), crop))
 
     return line_results
+
+
+def split_wide_line(crop: np.ndarray, max_aspect: float = 7.5) -> List[np.ndarray]:
+    """Splits wide lines at lowest-ink vertical gaps so TrOCR keeps high character resolution."""
+    ch, cw = crop.shape[:2]
+    if ch == 0 or (cw / float(ch)) <= max_aspect:
+        return [crop]
+
+    n_chunks = max(2, int(np.ceil((cw / float(ch)) / max_aspect)))
+    target_w = cw // n_chunks
+    col_ink = np.sum(crop < 200, axis=0)
+
+    cuts = [0]
+    for k in range(1, n_chunks):
+        ideal = k * target_w
+        search_lo = max(cuts[-1] + int(ch * 2.5), ideal - int(target_w * 0.25))
+        search_hi = min(cw - int(ch * 2.5), ideal + int(target_w * 0.25))
+        if search_lo >= search_hi:
+            cuts.append(ideal)
+        else:
+            best_x = search_lo + int(np.argmin(col_ink[search_lo:search_hi]))
+            cuts.append(best_x)
+    cuts.append(cw)
+
+    chunks = []
+    for i in range(len(cuts) - 1):
+        c1 = max(0, cuts[i] - 4)
+        c2 = min(cw, cuts[i + 1] + 4)
+        sub = crop[:, c1:c2]
+        if sub.shape[1] >= max(24, ch) and np.any(sub < 190):
+            padded = cv2.copyMakeBorder(sub, 6, 6, 8, 8, cv2.BORDER_CONSTANT, value=255)
+            chunks.append(padded)
+
+    return chunks if chunks else [crop]

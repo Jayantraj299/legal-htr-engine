@@ -6,7 +6,7 @@ from typing import Dict, Any, List
 
 def reconstruct_paragraphs(lines: List[Dict[str, Any]]) -> List[str]:
     """Joins OCR line strings into flowing paragraphs using vertical spacing when available."""
-    non_empty = [l for l in lines if l.get("text", "").strip()]
+    non_empty = [l for l in lines if sum(c.isalnum() for c in l.get("text", "")) >= 3]
     if not non_empty:
         return []
 
