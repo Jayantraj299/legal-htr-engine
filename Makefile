@@ -3,26 +3,41 @@ SHELL := /bin/bash
 PYTHON := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)
 
 # Configurable runtime parameters
-DOC ?= data/processed/tight_lines_test.png
-OUT ?= data/processed/test_transcription.txt
-WORK_DIR ?= data/processed/pipeline_debug
+DOC ?= data/raw/real_samples/aviation.jpg
+OUT ?= data/processed/aviation_readable
+OUT_BASE := $(basename $(OUT))
+WORK_DIR ?= data/processed/run_doc
+MODEL ?= microsoft/trocr-base-handwritten
 BATCH_SIZE ?= 4
 WINDOW_SIZE ?= 25
 SAUVOLA_K ?= 0.2
 BENCHMARK ?= all
 
+# Digital text / PDF context analysis parameters
+TEXT_IN ?= data/raw/real_samples
+TEXT_OUT ?= data/processed/text_contexts
+
 .DEFAULT_GOAL := help
 
-.PHONY: help setup ingest ingest-iam ingest-bentham run binarize segment infer eval eval-quick dvc-track clean
+.PHONY: help setup ingest ingest-iam ingest-bentham \
+	    run run-classic run-printed run-embed process-text \
+	    view open binarize segment infer eval eval-quick dvc-track clean
 
 help:
 	@echo "=================================================================="
 	@echo " Legal-HTR Engine Build & Execution Targets"
 	@echo "=================================================================="
-	@echo "  make setup           Create .venv and install dependencies"
-	@echo "  make ingest          Ingest both IAM and Bentham benchmark splits"
-	@echo "  make run             Run full HTR pipeline on a document"
-	@echo "                       (Override: make run DOC=path/to/scan.png OUT=out.txt)"
+	@echo "  make setup           Create .venv and install CUDA PyTorch + deps"
+	@echo "  make ingest          Ingest IAM and Bentham benchmark splits"
+	@echo "  make run             Run archival cleaner + HTR + Legal-BERT (.md/.html/.json)"
+	@echo "                       (Override: make run DOC=path/to/scan.jpg OUT=data/processed/doc)"
+	@echo "  make run-classic     Run classic Sauvola + HPP seam-carving pipeline"
+	@echo "  make run-printed     Run pipeline using trocr-base-printed model"
+	@echo "  make run-embed       Run pipeline and export full 768-d pgvector embedding"
+	@echo "  make process-text    Run Legal-BERT context analysis on .txt/.md/.pdf files"
+	@echo "                       (Override: make process-text TEXT_IN=path/to/file.pdf)"
+	@echo "  make view            Print the generated readable Markdown document"
+	@echo "  make open            Open the styled HTML document in Brave Browser"
 	@echo "  make eval            Evaluate CER & WER across full test splits"
 	@echo "  make eval-quick      Quick 5-sample CER & WER smoke test"
 	@echo "  make binarize        Run standalone Sauvola adaptive binarization"
@@ -35,6 +50,7 @@ help:
 setup:
 	python3 -m venv .venv
 	.venv/bin/pip install --upgrade pip
+	.venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 	.venv/bin/pip install -r requirements.txt
 	.venv/bin/pip install dvc
 
@@ -49,11 +65,50 @@ ingest-bentham:
 run:
 	$(PYTHON) src/pipeline.py \
 	    --input "$(DOC)" \
-	    --output "$(OUT)" \
+	    --output "$(OUT_BASE)" \
 	    --work-dir "$(WORK_DIR)" \
+	    --model "$(MODEL)" \
+	    --batch-size $(BATCH_SIZE)
+
+run-classic:
+	$(PYTHON) src/pipeline.py \
+	    --input "$(DOC)" \
+	    --output "$(OUT_BASE)" \
+	    --work-dir "$(WORK_DIR)" \
+	    --model "$(MODEL)" \
 	    --batch-size $(BATCH_SIZE) \
+	    --classic-sauvola \
 	    --window-size $(WINDOW_SIZE) \
 	    -k $(SAUVOLA_K)
+
+run-printed:
+	$(PYTHON) src/pipeline.py \
+	    --input "$(DOC)" \
+	    --output "$(OUT_BASE)" \
+	    --work-dir "$(WORK_DIR)" \
+	    --model "microsoft/trocr-base-printed" \
+	    --batch-size $(BATCH_SIZE)
+
+run-embed:
+	$(PYTHON) src/pipeline.py \
+	    --input "$(DOC)" \
+	    --output "$(OUT_BASE)" \
+	    --work-dir "$(WORK_DIR)" \
+	    --model "$(MODEL)" \
+	    --batch-size $(BATCH_SIZE) \
+	    --full-embedding
+
+process-text:
+	$(PYTHON) src/analysis/process_text.py \
+	    --input "$(TEXT_IN)" \
+	    --output-dir "$(TEXT_OUT)" \
+	    --full-embedding
+
+view:
+	@cat "$(OUT_BASE).md"
+
+open:
+	@brave "$(OUT_BASE).html" >/dev/null 2>&1 &
 
 binarize:
 	@mkdir -p $(WORK_DIR)
@@ -82,7 +137,7 @@ eval:
 
 eval-quick:
 	$(PYTHON) src/engine/evaluate.py \
-	    --benchmark $(BENCHMARK) \nannano 
+	    --benchmark $(BENCHMARK) \
 	    --batch-size $(BATCH_SIZE) \
 	    --max-samples 5
 
@@ -90,6 +145,6 @@ dvc-track:
 	dvc add data
 
 clean:
-	rm -rf $(WORK_DIR) data/processed/run*
+	rm -rf $(WORK_DIR) data/processed/run* data/processed/pipeline_debug
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
